@@ -1,22 +1,141 @@
 ---
-title: "PML_PredictionAssignmentProject"
-author: "James Lin"
-date: "January 24, 2016"
+title: "Prediction Assignment Project"
 output: html_document
 ---
+## Executive Summary
+The goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner (classe variable) in which they did the exercise. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: [http://groupware.les.inf.puc-rio.br/har] (see the section on the Weight Lifting Exercise Dataset). RandomForest model is selected to predict classe outcome. 
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r, message=FALSE,warning=FALSE}
+library(caret)
+library(ggplot2)
+library(Matrix)
+## enable caret parallel processing 
+library(doMC)
+registerDoMC(cores=4)
+```
+#### Data Set 
+source: [http://groupware.les.inf.puc-rio.br/har]  
+The training data for this project are available here:  
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]  
+The test data are available here:  
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]  
+We used training dataset to create training (75%) and validation dataset(25%).  
+The validation data is used to performance Out of sample error test.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r, cache=TRUE,message=FALSE ,warning=FALSE }
+## Get data set from local
+trainData <- read.csv("./pml-training.csv", stringsAsFactors = FALSE)
+## Training and validation data set
+trainInd <- createDataPartition(y=trainData$classe, p=0.75, list=FALSE)
+paTrain <- trainData[trainInd,]
+paTest <- trainData[-trainInd,]
+finalTest <- read.csv("./pml-testing.csv", stringsAsFactors = FALSE)
+```
+
+#### Data exploration
+```{r , message=FALSE}
+dim(paTrain)
+names(paTrain)
+table(paTrain$classe)
+```
+There are 14718 observations and 160 variables in the training data set. The outcome variable "classe" is a factor vector with levels "A","B","C","D","E". It is unrealistic to explore dataset with 159 predictors by visual. I used caret package functions nearZeroVar and find Correlation to select model predictors 
+
+#### Data Preparation
+I removed irrelevent variables (X, user_name, raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp,new_winds,num_window) to predict outcome from training dataset based on information in source website. 
 
 ```{r}
-summary(cars)
+## - Remove irrelevent variables by their descriptions 
+## X, user_name, raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp,new_winds,num_window
+paTrain <- paTrain[,-c(1:7)]
+```
+I investigated the missing values with predictors and concluded that the predictors either have no missing value or have 14419 missing value of total 14718 obsevations. I decided to remove these predictors have missing value. 
+
+```{r, message=FALSE,warning=FALSE}
+## remove none numeric variables except "classe"
+classeInd <- which(colnames(paTrain) == "classe")
+selNAVar <- colSums(is.na(paTrain))
+table(selNAVar)
+selVar <- sapply(paTrain,function(x){ !any(is.na(x))})
+## keep classe column
+selVar[classeInd] <- TRUE
+paTrain <- paTrain[,selVar]
+```
+I utilized caret package function nearZeroVar to identify near zero-variance predictors in the dataset and removed them from training dataset. I also filtered highly correlated variables using findCorrelation function to reduce negatively affect to interpretabiliy of model.
+
+```{r, message=FALSE}
+## - Remove near zero-variance predictors
+nzCol <- nearZeroVar(paTrain,saveMetrics = TRUE)
+nzVar <- rownames(nzCol[nzCol$nzv == FALSE,])
+paTrain <- subset(paTrain, select =  nzVar)
+
+## - Remove multicollinearity 
+classeInd <- dim(paTrain)[2]
+descrCorr <- cor(paTrain[,-classeInd])
+highCorr <- findCorrelation(descrCorr, 0.90)
+paTrain <- paTrain[,-highCorr]
+
+dim(paTrain)
+names(paTrain)
+```
+I select randomforest model based on the following major features.  
+source:[https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#features]   
+1. It is unexcelled in accuracy among current algorithms.  
+2. It runs efficiently on large data set.  
+3. It can handle thousands of input variables.   
+4. It gives estimates of what variables are importat in the classification.  
+
+It narrowed down to 45 predictors to build model after data preparation process. 
+```{r, cache=TRUE, eval=TRUE, message=FALSE,warning=FALSE}
+## set seed 
+set.seed(19622)
+## Building and Tuning model -- RandomForest
+rfmodel <- train(classe ~ .,
+               data = paTrain, # Use the trainSet dataframe as the training data
+               method = "rf",# Use the "random forest" algorithm
+               trControl = trainControl(method = "cv", # Use cross-validation
+                                        number = 5) # Use 5 folds for cross-validation
+)
 ```
 
-You can also embed plots, for example:
 
-```{r, echo=FALSE}
-plot(cars)
+#### Model Performance
+```{r,message=FALSE,warning=FALSE}
+## 
+rfmodel
+```
+K-fold with 5 folds is used for cross-validation. You can see sample sizes for each resampling and their result. mtry is number of predictors randomly sampled to split at each node. mtry value 23 generated the best accuracy and Kappa value. It is chosen as the final model.
+
+#### Predicat the validation samples
+```{r,message=FALSE,warning=FALSE}
+
+## Prediction of new samples -- validation data set
+rfPred <- predict(rfmodel,paTest)
+table(rfPred)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+#### Out of sample errors and model performance analysis
+```{r, message=FALSE,warning=FALSE}
+## out of sample errors
+confusionMatrix(rfPred, paTest$classe)
+```
+The summary of confusionMatrix shows that model accuracy is 0.99 (scale 0 to 1, 1 is the best) and Kappa,i.e. precision, is 0.99 (scale 0 to 1, 1 is the best). Overall model performance is great. In outcome classes level, the model prediction performance for class D has the poorest sensitivity(0.9813) and class C has the poorest specificty (0.9946). You can find prediction errors detail from above prefence/prediction table. 
+
+#### Ranking the importance of predictors in the classification
+Randomforest ranks the importance of predictors in the classification. Here is the top 20 ranking list.
+
+```{r, message=FALSE,warning=FALSE}
+## varImp -- Show 
+rfVarImp <- varImp(rfmodel)
+plot(rfVarImp)
+```
+
+#### Predict the test samples
+We used built prediction model to predict 20 different test cases.
+```{r, message=FALSE,warning=FALSE}
+## predict assignment test result
+finalPred <- predict(rfmodel,finalTest)
+
+finalPred
+```
+
